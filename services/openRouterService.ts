@@ -8,6 +8,7 @@ const MODELS = {
     TCM: "meta-llama/llama-3.1-8b-instruct",
     PHARMACIST: "mistralai/mistral-7b-instruct",
     LIFESTYLE: "google/gemma-2-9b-it",
+    ROOT_CAUSE: "meta-llama/llama-3.1-70b-instruct",
     PRESIDENT: "qwen/qwen-2.5-7b-instruct",
 };
 
@@ -74,6 +75,7 @@ export class OpenRouterService {
             { role: "TCM Practitioner", model: MODELS.TCM, prompt: PROMPTS.TCM },
             { role: "Integrative Pharmacist", model: MODELS.PHARMACIST, prompt: PROMPTS.PHARMACIST },
             { role: "Lifestyle Coach", model: MODELS.LIFESTYLE, prompt: PROMPTS.LIFESTYLE },
+            { role: "Root Cause & Diagnostics Analyst", model: MODELS.ROOT_CAUSE, prompt: PROMPTS.ROOT_CAUSE },
         ];
 
         // Run all in parallel
@@ -176,5 +178,70 @@ Task: Synthesize these reports into the final JSON format.
         const finalReport = await this.synthesize(expertResults, profileCtx, query);
 
         return finalReport;
+    }
+    // 3. Chat with Council (Text-based Follow-up)
+    public async chatWithCouncil(profileCtx: string, reportCtx: CouncilResponse, history: { role: string, content: string }[], query: string): Promise<string> {
+        if (!this.apiKey) {
+            throw new Error("API Key is missing.");
+        }
+
+        const systemPrompt = `
+You are the Council President of a multidisciplinary AI Health Council.
+You have just provided a comprehensive health report to the user.
+Now, you are engaging in a text-based conversation to answer follow-up questions, clarify points, or provide specific elaborations.
+
+CONTEXT:
+User Profile:
+${profileCtx}
+
+Current Report Findings:
+Key Insights: ${reportCtx.key_insights}
+Recommendations: ${JSON.stringify(reportCtx.recommendations, null, 2)}
+
+INSTRUCTIONS:
+1. Answer the user's question directly and conversationally.
+2. Reference the "Current Report Findings" specifically (e.g., "As mentioned in the Immediate Actions...").
+3. You can draw on the perspectives of the other council members (Western, TCM, Functional, Pharmacist, Lifestyle) if helpful, but you speak as the unified President.
+4. Keep answers concise (under 200 words) unless asked for a deep dive.
+5. If asked to "Elaborate" on a specific expert's view, adopt that lens temporarily but maintain your President persona (e.g., "From the TCM perspective, we see...").
+6. Always maintain a helpful, encouraging, and medically responsible tone.
+`;
+
+        // Format history for the API
+        const messages = [
+            { role: "system", content: systemPrompt },
+            ...history.map(msg => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content })),
+            { role: "user", content: query }
+        ];
+
+        try {
+            const response = await fetch(`${this.baseUrl}/chat/completions`, {
+                method: "POST",
+                headers: {
+                    "Authorization": `Bearer ${this.apiKey}`,
+                    "HTTP-Referer": "https://humanoptimus.app",
+                    "X-Title": "Health Optimization Council",
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: MODELS.PRESIDENT,
+                    messages: messages,
+                    temperature: 0.5, // Slightly higher for conversation
+                    max_tokens: 1000,
+                })
+            });
+
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(`OpenRouter Error (${response.status}): ${errData.error?.message || response.statusText}`);
+            }
+
+            const data = await response.json();
+            return data.choices[0]?.message?.content || "";
+
+        } catch (error: any) {
+            console.error("Error in chatWithCouncil:", error);
+            throw new Error(`Failed to chat with council: ${error.message}`);
+        }
     }
 }
