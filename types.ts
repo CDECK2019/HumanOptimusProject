@@ -1,5 +1,7 @@
 // MVP Schema & Types Alignment
 
+import type { HealthIntake } from './intakeTypes';
+
 export type Tier = 0 | 1 | 2 | 3 | 4;
 
 export type GoalPriority = 'low' | 'medium' | 'high';
@@ -78,6 +80,8 @@ export interface UserProfile {
   snapshot_id?: string;
   created_at?: string;
   tier?: Tier; // computed value based on filled data
+  onboarding_complete?: boolean;
+  lifestyle_intake?: HealthIntake | null;
 
   symptoms: Symptom[];
   interventions: Intervention[];
@@ -100,4 +104,38 @@ export interface CouncilResponse {
   why_experts_differ: string;
   next_best_step: string;
   disclaimer: string;
+}
+
+/** A discipline-specific identifier used by the UI for icons, color, ordering. */
+export type CouncilDiscipline =
+  | 'western'
+  | 'functional'
+  | 'tcm'
+  | 'ayurveda'
+  | 'pharmacist'
+  | 'lifestyle'
+  | 'root_cause';
+
+export interface ExpertReport {
+  discipline: CouncilDiscipline;
+  /** Human-friendly role title (e.g. "Western Medicine Advisor"). */
+  role: string;
+  /** OpenRouter model slug actually used. */
+  model: string;
+  /** Raw markdown content from the model. May contain "[ERROR: ...]" if the call failed. */
+  content: string;
+  /** True when the underlying request errored or returned empty. */
+  failed: boolean;
+}
+
+/** Full council artifact: per-expert outputs + the President's synthesis. */
+export interface CouncilReport {
+  /** ISO timestamp the report finished generating. */
+  generated_at: string;
+  /** The user query that produced the report. */
+  query: string;
+  /** Each discipline's standalone analysis. */
+  experts: ExpertReport[];
+  /** President's synthesized, JSON-shaped briefing. */
+  synthesis: CouncilResponse;
 }

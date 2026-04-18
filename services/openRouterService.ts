@@ -1,191 +1,279 @@
-import { UserProfile, CouncilResponse } from "../types";
+import {
+  UserProfile,
+  CouncilResponse,
+  CouncilReport,
+  ExpertReport,
+  CouncilDiscipline,
+} from "../types";
 import { PROMPTS } from "../constants";
 
-// Model Definitions from Roadmap
-const MODELS = {
-    WESTERN: "mistralai/mistral-7b-instruct",
-    FUNCTIONAL: "google/gemma-2-9b-it",
-    TCM: "meta-llama/llama-3.1-8b-instruct",
-    PHARMACIST: "mistralai/mistral-7b-instruct",
-    LIFESTYLE: "google/gemma-2-9b-it",
-    ROOT_CAUSE: "meta-llama/llama-3.1-70b-instruct",
-    PRESIDENT: "qwen/qwen-2.5-7b-instruct",
+/**
+ * Each discipline gets its own model so the council really has distinct
+ * "voices". Choices balance OpenRouter cost/quality and try to match the
+ * model's strength to the discipline (e.g. Claude for clinical safety,
+ * Qwen-72B for TCM/Chinese-tradition recall, GPT-4o-mini for pharmacology).
+ *
+ * If a slug 404s for your account, swap it without touching the call sites
+ * — the UI is keyed off `discipline`, not the model.
+ */
+const MODELS: Record<CouncilDiscipline | 'president', string> = {
+  western: "anthropic/claude-3.5-haiku",
+  functional: "meta-llama/llama-3.3-70b-instruct",
+  tcm: "qwen/qwen-2.5-72b-instruct",
+  ayurveda: "google/gemini-2.0-flash-001",
+  pharmacist: "openai/gpt-4o-mini",
+  lifestyle: "meta-llama/llama-3.1-8b-instruct",
+  root_cause: "deepseek/deepseek-chat",
+  president: "anthropic/claude-3.5-sonnet",
 };
 
-interface ExpertResponse {
-    role: string;
-    model: string;
-    content: string;
+interface ExpertSpec {
+  discipline: CouncilDiscipline;
+  role: string;
+  prompt: string;
+  model: string;
+}
+
+const EXPERTS: ExpertSpec[] = [
+  { discipline: 'western', role: 'Western Medicine Advisor', prompt: PROMPTS.WESTERN, model: MODELS.western },
+  { discipline: 'functional', role: 'Functional & Nutritional Medicine Specialist', prompt: PROMPTS.FUNCTIONAL, model: MODELS.functional },
+  { discipline: 'tcm', role: 'Traditional Chinese Medicine Practitioner', prompt: PROMPTS.TCM, model: MODELS.tcm },
+  { discipline: 'ayurveda', role: 'Ayurvedic Practitioner', prompt: PROMPTS.AYURVEDA, model: MODELS.ayurveda },
+  { discipline: 'pharmacist', role: 'Integrative Pharmacist', prompt: PROMPTS.PHARMACIST, model: MODELS.pharmacist },
+  { discipline: 'lifestyle', role: 'Lifestyle & Behavioral Health Coach', prompt: PROMPTS.LIFESTYLE, model: MODELS.lifestyle },
+  { discipline: 'root_cause', role: 'Root Cause & Diagnostics Analyst', prompt: PROMPTS.ROOT_CAUSE, model: MODELS.root_cause },
+];
+
+interface ChatOptions {
+  temperature?: number;
+  maxTokens?: number;
+  jsonMode?: boolean;
+  signal?: AbortSignal;
 }
 
 export class OpenRouterService {
-    private apiKey: string;
-    private baseUrl = "https://openrouter.ai/api/v1";
+  private apiKey: string;
+  private baseUrl = "https://openrouter.ai/api/v1";
 
-    constructor() {
-        this.apiKey = import.meta.env.VITE_OPENROUTER_API_KEY || '';
-        console.log("OpenRouter Service Initialized. Key present:", !!this.apiKey);
+  constructor() {
+    this.apiKey = import.meta.env.VITE_OPENROUTER_API_KEY || '';
+  }
+
+  private async chat(
+    model: string,
+    systemPrompt: string,
+    userContent: string,
+    opts: ChatOptions = {}
+  ): Promise<string> {
+    if (!this.apiKey) {
+      throw new Error("OpenRouter API key is missing.");
     }
 
-    // Helper for OpenRouter Calls
-    private async chatCompletion(model: string, systemPrompt: string, userContent: string): Promise<string> {
-        if (!this.apiKey) {
-            throw new Error("OpenRouter API Key is missing.");
+    const body: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+      temperature: opts.temperature ?? 0.3,
+      max_tokens: opts.maxTokens ?? 1000,
+    };
+    if (opts.jsonMode) {
+      body.response_format = { type: "json_object" };
+    }
+
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.apiKey}`,
+        "HTTP-Referer": "https://humanoptimus.app",
+        "X-Title": "Human Optimus Council",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({} as { error?: { message?: string } }));
+      const message = errData?.error?.message || response.statusText;
+      throw new Error(`OpenRouter ${response.status}: ${message}`);
+    }
+
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content ?? "";
+  }
+
+  private async consultExperts(
+    profileCtx: string,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<ExpertReport[]> {
+    const promises = EXPERTS.map(async (e): Promise<ExpertReport> => {
+      try {
+        const content = await this.chat(
+          e.model,
+          e.prompt,
+          `USER PROFILE:\n${profileCtx}\n\nUSER QUERY: "${query}"`,
+          { temperature: 0.3, maxTokens: 900, signal }
+        );
+        const trimmed = content.trim();
+        if (!trimmed) {
+          return { discipline: e.discipline, role: e.role, model: e.model, content: '[ERROR: empty response]', failed: true };
         }
+        return { discipline: e.discipline, role: e.role, model: e.model, content: trimmed, failed: false };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return {
+          discipline: e.discipline,
+          role: e.role,
+          model: e.model,
+          content: `[ERROR: ${reason}]`,
+          failed: true,
+        };
+      }
+    });
 
-        try {
-            const response = await fetch(`${this.baseUrl}/chat/completions`, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${this.apiKey}`,
-                    "HTTP-Referer": "https://humanoptimus.app", // Required by OpenRouter
-                    "X-Title": "Health Optimization Council",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    model: model,
-                    messages: [
-                        { role: "system", content: systemPrompt },
-                        { role: "user", content: userContent }
-                    ],
-                    temperature: 0.3, // Low temp for medical accuracy
-                    max_tokens: 1000,
-                })
-            });
+    return Promise.all(promises);
+  }
 
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(`OpenRouter Error (${response.status}): ${errData.error?.message || response.statusText}`);
-            }
-
-            const data = await response.json();
-            return data.choices[0]?.message?.content || "";
-
-        } catch (error: any) {
-            console.error(`Error calling model ${model}:`, error);
-            throw new Error(`Failed to consult expert (${model}): ${error.message}`);
-        }
-    }
-
-    // 1. Parallel Expert Execution
-    private async consultExperts(profileCtx: string, query: string): Promise<ExpertResponse[]> {
-        const experts = [
-            { role: "Western Medicine Advisor", model: MODELS.WESTERN, prompt: PROMPTS.WESTERN },
-            { role: "Functional Medicine Specialist", model: MODELS.FUNCTIONAL, prompt: PROMPTS.FUNCTIONAL },
-            { role: "TCM Practitioner", model: MODELS.TCM, prompt: PROMPTS.TCM },
-            { role: "Integrative Pharmacist", model: MODELS.PHARMACIST, prompt: PROMPTS.PHARMACIST },
-            { role: "Lifestyle Coach", model: MODELS.LIFESTYLE, prompt: PROMPTS.LIFESTYLE },
-            { role: "Root Cause & Diagnostics Analyst", model: MODELS.ROOT_CAUSE, prompt: PROMPTS.ROOT_CAUSE },
-        ];
-
-        // Run all in parallel
-        const promises = experts.map(async (expert) => {
-            try {
-                const content = await this.chatCompletion(expert.model, expert.prompt, `USER PROFILE:\n${profileCtx}\n\nUSER QUERY: "${query}"`);
-                return {
-                    role: expert.role,
-                    model: expert.model,
-                    content: content
-                };
-            } catch (err) {
-                // Fail gracefully for individual experts so the whole council doesn't crash
-                return {
-                    role: expert.role,
-                    model: expert.model,
-                    content: `[ERROR: Expert failed to respond. Reason: ${(err as Error).message}]`
-                };
-            }
-        });
-
-        return Promise.all(promises);
-    }
-
-    // 2. President Synthesis
-    private async synthesize(expertResults: ExpertResponse[], profileCtx: string, query: string): Promise<CouncilResponse> {
-
-        // Format expert inputs for the President
-        const expertBriefings = expertResults.map(e => `
----
-### REPORT FROM: ${e.role} (Model: ${e.model})
+  private buildPresidentContext(experts: ExpertReport[], profileCtx: string, query: string): string {
+    const briefings = experts
+      .map(
+        (e) => `---
+### ${e.role} (model: ${e.model})
 ${e.content}
----
-    `).join("\n");
+---`
+      )
+      .join("\n\n");
 
-        const presidentContext = `
-USER PROFILE:
+    return `USER PROFILE:
 ${profileCtx}
 
 USER QUERY:
 "${query}"
 
 EXPERT REPORTS:
-${expertBriefings}
+${briefings}
 
-Task: Synthesize these reports into the final JSON format.
-`;
+Task: Synthesize the above into the JSON object specified by your system prompt. Respond with JSON only.`;
+  }
 
-        // Qwen-2.5-7B is good, but for strict JSON, we might need to enforce it via prompt strong-arming or simple parsing
-        // OpenRouter supports response_format: { type: "json_object" } for some models, but let's be safe with prompt engineering first.
+  /**
+   * Tolerant JSON extractor. Handles bare JSON, fenced ```json blocks, and
+   * cases where the model wraps JSON in stray prose.
+   */
+  private static extractJson(raw: string): unknown {
+    const cleaned = raw.replace(/```json\s*|\s*```/g, '').trim();
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      // Fall back: try to find the first balanced object in the text.
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        const slice = cleaned.slice(start, end + 1);
+        return JSON.parse(slice);
+      }
+      throw new Error('No JSON object found in response.');
+    }
+  }
 
-        // We append a reminder to the system prompt to ensure JSON
-        const schemaDef = `{
-  "key_insights": "string",
-  "recommendations": {
-    "immediate_safe": ["string", "string"],
-    "consider": ["string"],
-    "explore_with_testing": ["string"],
-    "avoid": ["string"]
-  },
-  "why_experts_differ": "string",
-  "next_best_step": "string",
-  "disclaimer": "string"
-}`;
-        const jsonPrompt = PROMPTS.PRESIDENT + `\n\nCRITICAL: You must return ONLY valid JSON matching this exact schema. Do not wrap in markdown.\n\nSchema:\n${schemaDef}`;
+  private async synthesize(
+    experts: ExpertReport[],
+    profileCtx: string,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<CouncilResponse> {
+    const presidentContext = this.buildPresidentContext(experts, profileCtx, query);
 
-        const rawJson = await this.chatCompletion(MODELS.PRESIDENT, jsonPrompt, presidentContext);
-        console.log("President Raw Response:", rawJson); // Debugging
+    const attempt = async (jsonMode: boolean, temperature: number) => {
+      const raw = await this.chat(
+        MODELS.president,
+        PROMPTS.PRESIDENT_JSON,
+        presidentContext,
+        { temperature, maxTokens: 2000, jsonMode, signal }
+      );
+      return { raw, parsed: OpenRouterService.extractJson(raw) as CouncilResponse };
+    };
 
-        try {
-            // Strip markdown code blocks if present
-            const cleanJson = rawJson.replace(/```json\n?|\n?```/g, "").trim();
-            return JSON.parse(cleanJson) as CouncilResponse;
-        } catch (e) {
-            console.error("Failed to parse President's JSON:", rawJson);
-            throw new Error("The Council President failed to produce a structured report. Please try again.");
-        }
+    try {
+      const { parsed } = await attempt(true, 0.3);
+      return parsed;
+    } catch (firstErr) {
+      console.warn('President synthesis failed first attempt, retrying with repair instruction:', firstErr);
+      try {
+        const raw = await this.chat(
+          MODELS.president,
+          PROMPTS.PRESIDENT_JSON,
+          `${presidentContext}\n\nReminder: respond with the JSON object only. No prose, no markdown fences.`,
+          { temperature: 0, maxTokens: 2000, jsonMode: true, signal }
+        );
+        return OpenRouterService.extractJson(raw) as CouncilResponse;
+      } catch (secondErr) {
+        console.error('President JSON parse failed twice:', secondErr);
+        throw new Error('The Council President failed to produce a structured report. Please try again.');
+      }
+    }
+  }
+
+  private static buildProfileContext(profile: UserProfile): string {
+    return JSON.stringify(
+      {
+        symptoms: profile.symptoms,
+        interventions: profile.interventions,
+        goals: profile.goals,
+        biometrics: profile.biometrics,
+        labs: profile.labs,
+        lifestyle_intake: profile.lifestyle_intake,
+      },
+      null,
+      2
+    );
+  }
+
+  /**
+   * Run the full council: every expert in parallel, then synthesis. Returns
+   * a `CouncilReport` containing both the expert briefings and the
+   * President's structured synthesis so the UI can show both.
+   */
+  public async consultCouncil(
+    profile: UserProfile,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<CouncilReport> {
+    if (!this.apiKey) {
+      throw new Error('OpenRouter API key is missing. Set VITE_OPENROUTER_API_KEY in your env.');
     }
 
-    // Main Public Method
-    public async consultCouncil(profile: UserProfile, query: string): Promise<CouncilResponse> {
-        if (!this.apiKey) {
-            throw new Error("API Key is missing. Please provide a valid OpenRouter API Key.");
-        }
+    const profileCtx = OpenRouterService.buildProfileContext(profile);
+    const experts = await this.consultExperts(profileCtx, query, signal);
 
-        // Prepare Context
-        const profileCtx = JSON.stringify({
-            symptoms: profile.symptoms,
-            interventions: profile.interventions,
-            goals: profile.goals,
-            biometrics: profile.biometrics,
-            labs: profile.labs,
-            tier: profile.tier
-        }, null, 2);
-
-        // Step 1: Consult Experts
-        const expertResults = await this.consultExperts(profileCtx, query);
-
-        // Step 2: Synthesize
-        const finalReport = await this.synthesize(expertResults, profileCtx, query);
-
-        return finalReport;
+    const allFailed = experts.every((e) => e.failed);
+    if (allFailed) {
+      throw new Error('All council experts failed to respond. Check your API key and network.');
     }
-    // 3. Chat with Council (Text-based Follow-up)
-    public async chatWithCouncil(profileCtx: string, reportCtx: CouncilResponse, history: { role: string, content: string }[], query: string): Promise<string> {
-        if (!this.apiKey) {
-            throw new Error("API Key is missing.");
-        }
 
-        const systemPrompt = `
+    const synthesis = await this.synthesize(experts, profileCtx, query, signal);
+
+    return {
+      generated_at: new Date().toISOString(),
+      query,
+      experts,
+      synthesis,
+    };
+  }
+
+  public async chatWithCouncil(
+    profileCtx: string,
+    reportCtx: CouncilResponse,
+    history: { role: string; content: string }[],
+    query: string,
+    signal?: AbortSignal
+  ): Promise<string> {
+    if (!this.apiKey) throw new Error('OpenRouter API key is missing.');
+
+    const systemPrompt = `
 You are the Council President of a multidisciplinary AI Health Council.
 You have just provided a comprehensive health report to the user.
 Now, you are engaging in a text-based conversation to answer follow-up questions, clarify points, or provide specific elaborations.
@@ -201,47 +289,40 @@ Recommendations: ${JSON.stringify(reportCtx.recommendations, null, 2)}
 INSTRUCTIONS:
 1. Answer the user's question directly and conversationally.
 2. Reference the "Current Report Findings" specifically (e.g., "As mentioned in the Immediate Actions...").
-3. You can draw on the perspectives of the other council members (Western, TCM, Functional, Pharmacist, Lifestyle) if helpful, but you speak as the unified President.
+3. You can draw on the perspectives of the other council members (Western, Functional, TCM, Ayurveda, Pharmacist, Lifestyle, Root Cause) if helpful, but you speak as the unified President.
 4. Keep answers concise (under 200 words) unless asked for a deep dive.
 5. If asked to "Elaborate" on a specific expert's view, adopt that lens temporarily but maintain your President persona (e.g., "From the TCM perspective, we see...").
 6. Always maintain a helpful, encouraging, and medically responsible tone.
 `;
 
-        // Format history for the API
-        const messages = [
-            { role: "system", content: systemPrompt },
-            ...history.map(msg => ({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content })),
-            { role: "user", content: query }
-        ];
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...history.map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content })),
+      { role: 'user', content: query },
+    ];
 
-        try {
-            const response = await fetch(`${this.baseUrl}/chat/completions`, {
-                method: "POST",
-                headers: {
-                    "Authorization": `Bearer ${this.apiKey}`,
-                    "HTTP-Referer": "https://humanoptimus.app",
-                    "X-Title": "Health Optimization Council",
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    model: MODELS.PRESIDENT,
-                    messages: messages,
-                    temperature: 0.5, // Slightly higher for conversation
-                    max_tokens: 1000,
-                })
-            });
+    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'HTTP-Referer': 'https://humanoptimus.app',
+        'X-Title': 'Human Optimus Council',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: MODELS.president,
+        messages,
+        temperature: 0.5,
+        max_tokens: 1000,
+      }),
+      signal,
+    });
 
-            if (!response.ok) {
-                const errData = await response.json().catch(() => ({}));
-                throw new Error(`OpenRouter Error (${response.status}): ${errData.error?.message || response.statusText}`);
-            }
-
-            const data = await response.json();
-            return data.choices[0]?.message?.content || "";
-
-        } catch (error: any) {
-            console.error("Error in chatWithCouncil:", error);
-            throw new Error(`Failed to chat with council: ${error.message}`);
-        }
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({} as { error?: { message?: string } }));
+      throw new Error(`OpenRouter ${response.status}: ${errData?.error?.message || response.statusText}`);
     }
+    const data = await response.json();
+    return data?.choices?.[0]?.message?.content ?? '';
+  }
 }

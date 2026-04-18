@@ -40,23 +40,23 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
     };
 
     return (
-        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 relative font-sans overflow-hidden">
+        <div className="min-h-screen flex items-center justify-center bg-[#f8faf9] p-4 relative font-sans overflow-hidden">
             {/* Background Gradient Mesh */}
             <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-emerald-400/20 rounded-full blur-[120px]" />
-            <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-indigo-400/20 rounded-full blur-[120px]" />
+            <div className="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] bg-emerald-500/10 rounded-full blur-[120px]" />
 
-            <div className="bg-white/80 backdrop-blur-xl p-8 rounded-2xl shadow-2xl shadow-slate-200/50 max-w-md w-full relative z-10 border border-white/50 ring-1 ring-slate-900/5">
+            <div className="bg-white/80 backdrop-blur-xl p-8 rounded-[2rem] shadow-2xl shadow-emerald-900/[0.08] max-w-md w-full relative z-10 border border-white/50 ring-1 ring-slate-900/5">
                 <div className="text-center mb-8">
-                    <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-emerald-500 rounded-2xl shadow-lg shadow-indigo-500/30 flex items-center justify-center mx-auto mb-6 transform rotate-3">
+                    <div className="w-16 h-16 bg-emerald-600 rounded-2xl shadow-lg shadow-emerald-600/30 flex items-center justify-center mx-auto mb-6">
                         <Lock className="text-white" size={32} />
                     </div>
                     <h2 className="text-3xl font-bold text-slate-900 font-display tracking-tight">
-                        {isLogin ? 'Welcome Back' : 'Join the Council'}
+                        {isLogin ? 'Welcome back' : 'Create your space'}
                     </h2>
                     <p className="text-slate-500 mt-2 text-lg">
                         {isLogin
-                            ? 'Sign in to access your health profile.'
-                            : 'Create a secure account to start your journey.'}
+                            ? 'Sign in to continue your guided health desk.'
+                            : 'Local-first friendly account on your PocketBase server.'}
                     </p>
                 </div>
 
@@ -66,7 +66,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                         <input
                             type="email"
                             required
-                            className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-slate-800 font-medium placeholder:text-slate-400"
+                            className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 outline-none transition-all text-slate-800 font-medium placeholder:text-slate-400"
                             placeholder="you@example.com"
                             value={email}
                             onChange={(e) => setEmail(e.target.value)}
@@ -78,7 +78,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                             type="password"
                             required
                             minLength={8}
-                            className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all text-slate-800 font-medium placeholder:text-slate-400"
+                            className="w-full p-3.5 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/25 focus:border-emerald-500 outline-none transition-all text-slate-800 font-medium placeholder:text-slate-400"
                             placeholder="••••••••"
                             value={password}
                             onChange={(e) => setPassword(e.target.value)}
@@ -86,7 +86,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                     </div>
 
                     {error && (
-                        <div className="p-4 bg-red-50 text-red-600 text-sm rounded-xl flex items-center gap-3 border border-red-100 animate-in fade-in slide-in-from-top-2">
+                        <div className="p-4 bg-red-50 text-red-600 text-sm rounded-xl flex items-center gap-3 border border-red-100">
                             <AlertCircle size={18} className="shrink-0" />
                             <span className="font-medium">{error}</span>
                         </div>
@@ -95,7 +95,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                     <button
                         type="submit"
                         disabled={loading}
-                        className="w-full bg-slate-900 text-white font-bold py-4 rounded-xl hover:bg-slate-800 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-slate-900/20 flex items-center justify-center gap-2 mt-2"
+                        className="w-full bg-emerald-600 text-white font-bold py-4 rounded-xl hover:bg-emerald-500 transition-all hover:scale-[1.02] active:scale-[0.98] shadow-xl shadow-emerald-600/25 flex items-center justify-center gap-2 mt-2"
                     >
                         {loading ? (
                             <span className="flex items-center gap-2">Processing...</span>
@@ -112,7 +112,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onAuthSuccess }) => {
                     {isLogin ? "Don't have an account? " : "Already have an account? "}
                     <button
                         onClick={() => { setIsLogin(!isLogin); setError(null); }}
-                        className="text-indigo-600 font-bold hover:text-indigo-700 hover:underline transition-colors"
+                        className="text-emerald-700 font-bold hover:text-emerald-800 hover:underline transition-colors"
                     >
                         {isLogin ? 'Sign Up' : 'Sign In'}
                     </button>
