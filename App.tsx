@@ -153,6 +153,7 @@ const App: React.FC = () => {
   };
 
   const handleGenerateReport = () => {
+    console.info('[council] Generate report requested from Overview.');
     setMainNav('coach');
     const q = query.trim() || DEFAULT_OVERVIEW_QUERY;
     setQuery(q);
@@ -161,6 +162,9 @@ const App: React.FC = () => {
 
   const handleReset = () => {
     consultAbort.current?.abort();
+    chatAbort.current?.abort();
+    setConsulting(false);
+    setChatLoading(false);
     setReport(null);
     setMessages([]);
     setQuery('');
@@ -313,7 +317,6 @@ const App: React.FC = () => {
         loading={consulting}
         chatLoading={chatLoading}
         saving={saving}
-        error={error}
         onConsult={handleConsult}
         onSave={handleSave}
         onReset={handleReset}
@@ -372,6 +375,8 @@ const App: React.FC = () => {
       onNavigate={setMainNav}
       onLogout={handleLogout}
       devAuthBypass={useLocalDevProfile()}
+      globalError={error}
+      onDismissError={() => setError(null)}
     >
       {main}
     </AppShell>

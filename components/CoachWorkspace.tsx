@@ -1,5 +1,5 @@
 import React from 'react';
-import { Loader2, AlertTriangle } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { ProfileForm } from './ProfileForm';
 import { CouncilView } from './CouncilView';
 import { ChatInterface } from './ChatInterface';
@@ -15,7 +15,6 @@ interface CoachWorkspaceProps {
   loading: boolean;
   chatLoading: boolean;
   saving: boolean;
-  error: string | null;
   onConsult: () => void;
   onSave: () => void;
   onReset: () => void;
@@ -33,7 +32,6 @@ export const CoachWorkspace: React.FC<CoachWorkspaceProps> = ({
   loading,
   chatLoading,
   saving,
-  error,
   onConsult,
   onSave,
   onReset,
@@ -60,20 +58,13 @@ export const CoachWorkspace: React.FC<CoachWorkspaceProps> = ({
         </p>
       </header>
 
-      {error && (
-        <div className="flex items-center gap-3 rounded-2xl border border-rose-100 bg-rose-50 p-4 text-rose-700 shadow-sm">
-          <AlertTriangle className="shrink-0" />
-          <p className="font-medium">{error}</p>
-        </div>
-      )}
-
       {!report ? (
         <div className="space-y-10">
           <div className="overflow-hidden rounded-[2rem] border border-white/60 bg-white/90 shadow-xl shadow-emerald-900/[0.06] ring-1 ring-slate-900/[0.04]">
             <ProfileForm profile={profile} setProfile={setProfile} />
           </div>
 
-          <div className="mx-auto max-w-3xl space-y-6">
+          <div className="space-y-6">
             <div className="rounded-2xl border border-slate-200 bg-white p-2 shadow-lg">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
                 <textarea

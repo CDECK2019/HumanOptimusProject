@@ -10,6 +10,7 @@ import {
   X,
   Sparkles,
   FileText,
+  AlertTriangle,
 } from 'lucide-react';
 import { computeReadiness } from '../utils/readinessScore';
 import type { UserProfile } from '../types';
@@ -24,6 +25,9 @@ interface AppShellProps {
   onLogout: () => void;
   /** Dev-only: sign-in skipped, profile in localStorage */
   devAuthBypass?: boolean;
+  /** Optional global error to surface as a dismissible banner above the main pane. */
+  globalError?: string | null;
+  onDismissError?: () => void;
   children: React.ReactNode;
 }
 
@@ -44,6 +48,8 @@ export const AppShell: React.FC<AppShellProps> = ({
   onNavigate,
   onLogout,
   devAuthBypass,
+  globalError,
+  onDismissError,
   children,
 }) => {
   const [drawer, setDrawer] = useState(false);
@@ -259,7 +265,28 @@ export const AppShell: React.FC<AppShellProps> = ({
           </div>
         </aside>
 
-        <main className="relative min-w-0 flex-1 px-4 py-8 md:px-10 md:py-10 lg:pl-12">{children}</main>
+        <main className="relative min-w-0 flex-1 px-4 py-8 md:px-10 md:py-10 lg:pl-12">
+          {globalError && (
+            <div
+              role="alert"
+              className="mx-auto mb-6 flex max-w-5xl items-start gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-rose-800 shadow-sm"
+            >
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+              <div className="flex-1 text-sm font-medium leading-relaxed">{globalError}</div>
+              {onDismissError && (
+                <button
+                  type="button"
+                  onClick={onDismissError}
+                  className="rounded-lg p-1 text-rose-700 hover:bg-rose-100"
+                  aria-label="Dismiss error"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              )}
+            </div>
+          )}
+          {children}
+        </main>
       </div>
     </div>
   );

@@ -13,19 +13,50 @@ import { PROMPTS } from "../constants";
  * model's strength to the discipline (e.g. Claude for clinical safety,
  * Qwen-72B for TCM/Chinese-tradition recall, GPT-4o-mini for pharmacology).
  *
- * If a slug 404s for your account, swap it without touching the call sites
- * — the UI is keyed off `discipline`, not the model.
+ * Slugs verified against OpenRouter's catalog April 2026. If a slug 404s for
+ * your account, swap it here — the UI is keyed off `discipline`, not the
+ * model. The synthesize step also walks `PRESIDENT_FALLBACKS` if the
+ * primary President model fails.
  */
 const MODELS: Record<CouncilDiscipline | 'president', string> = {
-  western: "anthropic/claude-3.5-haiku",
+  western: "anthropic/claude-haiku-4.5",
   functional: "meta-llama/llama-3.3-70b-instruct",
   tcm: "qwen/qwen-2.5-72b-instruct",
-  ayurveda: "google/gemini-2.0-flash-001",
+  ayurveda: "google/gemini-2.5-flash",
   pharmacist: "openai/gpt-4o-mini",
   lifestyle: "meta-llama/llama-3.1-8b-instruct",
   root_cause: "deepseek/deepseek-chat",
-  president: "anthropic/claude-3.5-sonnet",
+  president: "anthropic/claude-sonnet-4.5",
 };
+
+/**
+ * Tried in order if the primary President model errors (e.g. is deprecated
+ * or your account doesn't have access). Models fall back from highest to
+ * most accessible quality.
+ */
+const PRESIDENT_FALLBACKS: string[] = [
+  "anthropic/claude-sonnet-4.6",
+  "openai/gpt-4o-mini",
+  "meta-llama/llama-3.3-70b-instruct",
+];
+
+/**
+ * Per-expert fallback chain. If an expert's primary model 404s, errors, or
+ * the account doesn't have access, walk this list in order. Picked so the
+ * council still produces output even on a restricted OpenRouter key.
+ */
+const EXPERT_FALLBACKS: string[] = [
+  "openai/gpt-4o-mini",
+  "anthropic/claude-haiku-4.5",
+  "meta-llama/llama-3.3-70b-instruct",
+];
+
+/**
+ * Hard cap on any single OpenRouter call. Anything slower than this is
+ * almost certainly stuck and is better off retried via a fallback model than
+ * left to hang the UI in "Convening…" forever.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
 
 interface ExpertSpec {
   discipline: CouncilDiscipline;
@@ -82,26 +113,110 @@ export class OpenRouterService {
       body.response_format = { type: "json_object" };
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.apiKey}`,
-        "HTTP-Referer": "https://humanoptimus.app",
-        "X-Title": "Human Optimus Council",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({} as { error?: { message?: string } }));
-      const message = errData?.error?.message || response.statusText;
-      throw new Error(`OpenRouter ${response.status}: ${message}`);
+    // Compose a timeout signal with the caller's signal so a stuck OpenRouter
+    // request never leaves the UI hanging. Uses AbortSignal.any when available
+    // (Chrome 116+/Firefox 124+/Safari 17.4+) and a manual relay otherwise.
+    const timeoutCtl = new AbortController();
+    const timeoutId = setTimeout(() => timeoutCtl.abort(new Error('Request timeout')), REQUEST_TIMEOUT_MS);
+    let composedSignal: AbortSignal = timeoutCtl.signal;
+    let onCallerAbort: (() => void) | null = null;
+    if (opts.signal) {
+      const anyFn = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+      if (typeof anyFn === 'function') {
+        composedSignal = anyFn([timeoutCtl.signal, opts.signal]);
+      } else {
+        if (opts.signal.aborted) timeoutCtl.abort(opts.signal.reason);
+        else {
+          onCallerAbort = () => timeoutCtl.abort(opts.signal!.reason);
+          opts.signal.addEventListener('abort', onCallerAbort, { once: true });
+        }
+      }
     }
 
-    const data = await response.json();
-    return data?.choices?.[0]?.message?.content ?? "";
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.apiKey}`,
+          "HTTP-Referer": "https://humanoptimus.app",
+          "X-Title": "Human Optimus Council",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+        signal: composedSignal,
+      });
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({} as { error?: { message?: string } }));
+        const message = errData?.error?.message || response.statusText;
+        throw new Error(`OpenRouter ${response.status} (${model}): ${message}`);
+      }
+
+      const data = await response.json();
+      return data?.choices?.[0]?.message?.content ?? "";
+    } catch (err) {
+      // Caller-aborted: surface as-is so consult flow knows the user bailed.
+      if (opts.signal?.aborted) throw new Error('Request aborted by caller.');
+      // Timed out: clearer message.
+      if (timeoutCtl.signal.aborted) {
+        throw new Error(`OpenRouter request to ${model} timed out after ${Math.round(REQUEST_TIMEOUT_MS / 1000)}s.`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
+      if (onCallerAbort && opts.signal) opts.signal.removeEventListener('abort', onCallerAbort);
+    }
+  }
+
+  /**
+   * Run one expert, walking `[primary, ...EXPERT_FALLBACKS]` until one
+   * succeeds or all fail. The returned `ExpertReport.model` reflects whichever
+   * model actually produced the content so the UI shows the truth.
+   */
+  private async consultOneExpert(
+    e: ExpertSpec,
+    profileCtx: string,
+    query: string,
+    signal?: AbortSignal
+  ): Promise<ExpertReport> {
+    const userContent = `USER PROFILE:\n${profileCtx}\n\nUSER QUERY: "${query}"`;
+    const candidates = [e.model, ...EXPERT_FALLBACKS.filter((m) => m !== e.model)];
+    let lastErr: unknown = null;
+
+    for (const model of candidates) {
+      if (signal?.aborted) {
+        return { discipline: e.discipline, role: e.role, model, content: '[ERROR: aborted]', failed: true };
+      }
+      try {
+        const content = await this.chat(model, e.prompt, userContent, {
+          temperature: 0.3,
+          maxTokens: 900,
+          signal,
+        });
+        const trimmed = content.trim();
+        if (!trimmed) {
+          lastErr = new Error('empty response');
+          console.warn(`[council] ${e.discipline} returned empty on ${model}, trying next…`);
+          continue;
+        }
+        if (model !== e.model) {
+          console.info(`[council] ${e.discipline} succeeded via fallback ${model} (primary ${e.model} failed).`);
+        }
+        return { discipline: e.discipline, role: e.role, model, content: trimmed, failed: false };
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[council] ${e.discipline} failed on ${model}:`, err instanceof Error ? err.message : err);
+      }
+    }
+
+    const reason = lastErr instanceof Error ? lastErr.message : 'all expert models failed';
+    return {
+      discipline: e.discipline,
+      role: e.role,
+      model: e.model,
+      content: `[ERROR: ${reason}]`,
+      failed: true,
+    };
   }
 
   private async consultExperts(
@@ -109,32 +224,7 @@ export class OpenRouterService {
     query: string,
     signal?: AbortSignal
   ): Promise<ExpertReport[]> {
-    const promises = EXPERTS.map(async (e): Promise<ExpertReport> => {
-      try {
-        const content = await this.chat(
-          e.model,
-          e.prompt,
-          `USER PROFILE:\n${profileCtx}\n\nUSER QUERY: "${query}"`,
-          { temperature: 0.3, maxTokens: 900, signal }
-        );
-        const trimmed = content.trim();
-        if (!trimmed) {
-          return { discipline: e.discipline, role: e.role, model: e.model, content: '[ERROR: empty response]', failed: true };
-        }
-        return { discipline: e.discipline, role: e.role, model: e.model, content: trimmed, failed: false };
-      } catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        return {
-          discipline: e.discipline,
-          role: e.role,
-          model: e.model,
-          content: `[ERROR: ${reason}]`,
-          failed: true,
-        };
-      }
-    });
-
-    return Promise.all(promises);
+    return Promise.all(EXPERTS.map((e) => this.consultOneExpert(e, profileCtx, query, signal)));
   }
 
   private buildPresidentContext(experts: ExpertReport[], profileCtx: string, query: string): string {
@@ -179,6 +269,11 @@ Task: Synthesize the above into the JSON object specified by your system prompt.
     }
   }
 
+  /**
+   * Try the President model with JSON mode; if it fails, retry once with a
+   * repair instruction at temperature 0; if that still fails, walk the
+   * `PRESIDENT_FALLBACKS` chain (one attempt each). Aborts skip immediately.
+   */
   private async synthesize(
     experts: ExpertReport[],
     profileCtx: string,
@@ -186,35 +281,39 @@ Task: Synthesize the above into the JSON object specified by your system prompt.
     signal?: AbortSignal
   ): Promise<CouncilResponse> {
     const presidentContext = this.buildPresidentContext(experts, profileCtx, query);
+    const repairContext = `${presidentContext}\n\nReminder: respond with the JSON object only. No prose, no markdown fences.`;
 
-    const attempt = async (jsonMode: boolean, temperature: number) => {
+    const tryModel = async (model: string, isRepair = false): Promise<CouncilResponse> => {
       const raw = await this.chat(
-        MODELS.president,
+        model,
         PROMPTS.PRESIDENT_JSON,
-        presidentContext,
-        { temperature, maxTokens: 2000, jsonMode, signal }
+        isRepair ? repairContext : presidentContext,
+        { temperature: isRepair ? 0 : 0.3, maxTokens: 2000, jsonMode: true, signal }
       );
-      return { raw, parsed: OpenRouterService.extractJson(raw) as CouncilResponse };
+      return OpenRouterService.extractJson(raw) as CouncilResponse;
     };
 
-    try {
-      const { parsed } = await attempt(true, 0.3);
-      return parsed;
-    } catch (firstErr) {
-      console.warn('President synthesis failed first attempt, retrying with repair instruction:', firstErr);
+    const attempts: { model: string; isRepair: boolean }[] = [
+      { model: MODELS.president, isRepair: false },
+      { model: MODELS.president, isRepair: true },
+      ...PRESIDENT_FALLBACKS.map((model) => ({ model, isRepair: false })),
+    ];
+
+    let lastErr: unknown = null;
+    for (const { model, isRepair } of attempts) {
+      if (signal?.aborted) throw new Error('Council request aborted.');
       try {
-        const raw = await this.chat(
-          MODELS.president,
-          PROMPTS.PRESIDENT_JSON,
-          `${presidentContext}\n\nReminder: respond with the JSON object only. No prose, no markdown fences.`,
-          { temperature: 0, maxTokens: 2000, jsonMode: true, signal }
-        );
-        return OpenRouterService.extractJson(raw) as CouncilResponse;
-      } catch (secondErr) {
-        console.error('President JSON parse failed twice:', secondErr);
-        throw new Error('The Council President failed to produce a structured report. Please try again.');
+        return await tryModel(model, isRepair);
+      } catch (err) {
+        lastErr = err;
+        const tag = isRepair ? `${model} (repair retry)` : model;
+        console.warn(`President synthesis attempt failed on ${tag}:`, err);
       }
     }
+
+    console.error('President JSON parse failed across all fallbacks:', lastErr);
+    const reason = lastErr instanceof Error ? lastErr.message : 'unknown error';
+    throw new Error(`The Council President failed to produce a structured report (${reason}). Please try again.`);
   }
 
   private static buildProfileContext(profile: UserProfile): string {
@@ -246,15 +345,24 @@ Task: Synthesize the above into the JSON object specified by your system prompt.
       throw new Error('OpenRouter API key is missing. Set VITE_OPENROUTER_API_KEY in your env.');
     }
 
+    console.info('[council] Convening', { query: query.slice(0, 80), experts: EXPERTS.length });
+    const t0 = performance.now();
     const profileCtx = OpenRouterService.buildProfileContext(profile);
     const experts = await this.consultExperts(profileCtx, query, signal);
 
-    const allFailed = experts.every((e) => e.failed);
-    if (allFailed) {
-      throw new Error('All council experts failed to respond. Check your API key and network.');
+    const failedDisciplines = experts.filter((e) => e.failed).map((e) => e.discipline);
+    if (failedDisciplines.length === experts.length) {
+      const sample = experts[0]?.content?.replace(/^\[ERROR:\s*/, '').replace(/\]$/, '') || 'unknown';
+      throw new Error(
+        `All council experts failed. Last error: ${sample}. Check your OpenRouter key, balance, and that the listed models are enabled on your account.`
+      );
+    }
+    if (failedDisciplines.length > 0) {
+      console.warn(`[council] ${failedDisciplines.length}/${experts.length} experts unavailable:`, failedDisciplines);
     }
 
     const synthesis = await this.synthesize(experts, profileCtx, query, signal);
+    console.info(`[council] Done in ${Math.round(performance.now() - t0)}ms (${experts.length - failedDisciplines.length} expert voices reporting).`);
 
     return {
       generated_at: new Date().toISOString(),

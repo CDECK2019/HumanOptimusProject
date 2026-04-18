@@ -163,21 +163,29 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         ))}
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-4 rounded-[2rem] border border-slate-200 bg-slate-900 px-8 py-6 text-white shadow-xl">
-        <div>
-          <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-200/80">Or ask something specific</p>
-          <p className="mt-2 font-display text-xl font-bold">Open the coach with a focused question.</p>
-          <p className="mt-1 text-sm text-slate-300">
-            Same council, same context — just narrower in scope (e.g. "Review my blood work").
-          </p>
+      <div className="relative overflow-hidden rounded-[2rem] border border-emerald-900/20 bg-emerald-950 px-8 py-7 text-white shadow-xl shadow-emerald-950/20">
+        <div className="pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full bg-emerald-500/15 blur-3xl" />
+        <div className="pointer-events-none absolute -left-12 -bottom-12 h-40 w-40 rounded-full bg-emerald-400/10 blur-3xl" />
+        <div className="relative flex flex-wrap items-center justify-between gap-4">
+          <div className="max-w-xl">
+            <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-emerald-300/90">
+              Or ask something specific
+            </p>
+            <p className="mt-2 font-display text-xl font-bold tracking-tight md:text-2xl">
+              Open the coach with a focused question.
+            </p>
+            <p className="mt-1 text-sm font-medium leading-relaxed text-emerald-100/75">
+              Same council, same context — just narrower in scope (e.g. "Review my blood work").
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => onNavigate('coach')}
+            className="inline-flex items-center gap-2 rounded-2xl bg-emerald-400 px-6 py-3 text-sm font-black text-emerald-950 shadow-lg shadow-emerald-900/40 transition hover:bg-emerald-300"
+          >
+            Go to coach <ArrowRight className="h-4 w-4" />
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => onNavigate('coach')}
-          className="inline-flex items-center gap-2 rounded-2xl bg-emerald-400 px-6 py-3 text-sm font-black text-emerald-950 shadow-lg transition hover:bg-emerald-300"
-        >
-          Go to coach <ArrowRight className="h-4 w-4" />
-        </button>
       </div>
     </div>
   );
